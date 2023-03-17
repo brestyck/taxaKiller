@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -14,7 +14,6 @@ import (
 	"github.com/gotk3/gotk3/gtk"
 )
 
-var actionButton *gtk.Button
 var connectionObject net.PacketConn
 var serverAddress *net.UDPAddr
 
@@ -44,19 +43,20 @@ func drawCallback(da *gtk.DrawingArea, cr *cairo.Context, isActive bool, posDotX
 }
 
 // Главное окно
-func main_window(conn net.Conn) {
+func main_window(conn_ptr *net.Conn) {
+	conn := *conn_ptr
 	var positionX float64
 	var positionY float64
 	var isActive bool
 	// isActive, wasShot
 	statePacket := make([]byte, 2)
 
-	connectionObject, _ = net.ListenPacket("udp", "")
-	serverAddress, _ = net.ResolveUDPAddr("udp", os.Args[1])
-	gtk.Init(nil)
-	window, _ := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
-	outerBox, _ := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 40)
-	drawArea, _ := gtk.DrawingAreaNew()
+	window, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
+	outerBox, err := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 40)
+	drawArea, err := gtk.DrawingAreaNew()
+	if err != nil {
+		log.Fatal(err)
+	}
 	drawArea.SetSizeRequest(400, 400)
 	drawArea.Connect("draw", func(da *gtk.DrawingArea, cr *cairo.Context) {
 		drawCallback(da, cr, isActive, positionX, positionY)
@@ -87,7 +87,10 @@ func main_window(conn net.Conn) {
 		}
 	})
 
-	actionButton, _ = gtk.ButtonNewWithLabel("Достать ствол")
+	actionButton, err := gtk.ButtonNewWithLabel("Достать ствол")
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Update position and color
 	randomizeSource := rand.NewSource(time.Now().UnixNano())
 	randomGetter := rand.New(randomizeSource)
@@ -108,12 +111,16 @@ func main_window(conn net.Conn) {
 	outerBox.Add(actionButton)
 	window.Add(outerBox)
 	window.SetDefaultSize(700, 700)
-	window.ShowAll()
 	window.Connect("destroy", gtk.MainQuit)
+	window.ShowAll()
+	log.Println("Showed window")
+	window.QueueDraw()
+	log.Println("Draw queued")
 	incomingPacket := make([]byte, 2)
 	// Запускаем обработку постапующих пакетов
 	go func() {
 		for {
+			log.Println("Waiting for incoming packet (routine)")
 			_, err := conn.Read(incomingPacket)
 			if err != nil {
 				log.Print(err)
@@ -129,7 +136,6 @@ func main_window(conn net.Conn) {
 					go alarmio("VAS ZAVALILI")
 				}
 			}
-			window.QueueDraw()
 		}
 	}()
 }
@@ -155,37 +161,31 @@ func main() {
 	// Отправляем сигнал о намерении получить инфу о противниках
 	// conn.Write([]byte{2, 0})
 
-	// Получаем список соперников
-	buf := make([]byte, 16)
-	conn.Read(buf)
-	playersNumber := binary.LittleEndian.Uint16(buf)
-	fmt.Printf("Players: %v\n", playersNumber)
+	nameBuffer := make([]byte, 60000)
 
-	nameBuffer := make([]byte, 0xff)
-	for i := 0; i < int(playersNumber); i++ {
-		fmt.Println("Receiving player...")
-
-		// getting name
-		n, err := conn.Read(nameBuffer)
-
-		if err != nil {
-			log.Println(err)
-		}
-		fmt.Printf("Added player %s\n", string(nameBuffer))
-		nameBuffer = nameBuffer[:n]
-		playerBtn, _ := gtk.ButtonNewWithLabel(string(nameBuffer))
+	// getting name
+	n, err := conn.Read(nameBuffer)
+	var namesList []string
+	err = json.Unmarshal(nameBuffer[:n], &namesList)
+	if err != nil {
+		log.Println(err)
+	}
+	for _, el := range namesList {
+		playerBtn, _ := gtk.ButtonNewWithLabel(el)
 		playerBtn.Connect("clicked", func(b *gtk.Button) {
 			// на нажатие отправляем имя выбранного игрока
-			pl, _ := b.GetLabel()
-			conn.Write([]byte(pl))
+			conn.Write([]byte(el))
 			menu_window.Close()
-			main_window(conn)
+			main_window(&conn)
 		})
 		grid.Add(playerBtn)
 		fmt.Println("Player added")
 	}
 
-	menu_window.Connect("destroy", gtk.MainQuit)
+	menu_window.Connect("destroy", func() {
+		fmt.Println("eexit")
+		// gtk.MainQuit()
+	})
 	menu_window.Add(grid)
 	menu_window.SetDefaultSize(400, 400)
 	menu_window.ShowAll()
